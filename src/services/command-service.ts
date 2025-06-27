@@ -3,10 +3,15 @@ import { promisify } from 'util';
 import { randomUUID } from 'crypto';
 import { EventEmitter } from 'events';
 import * as path from 'path';
+import * as fs from 'fs';
+import * as os from 'os';
 import { getDefaultShell, validateShellPath, getShellConfigurationHelp } from '../utils/platform-utils.js';
 import { getPlatformSpecificCommands } from '../utils/command-whitelist-utils.js';
 
 const execFileAsync = promisify(execFile);
+const fsReadFile = promisify(fs.readFile);
+const fsWriteFile = promisify(fs.writeFile);
+const fsMkdir = promisify(fs.mkdir);
 
 /**
  * Command security level classification
@@ -76,6 +81,8 @@ export class CommandService extends EventEmitter {
   private pendingCommands: Map<string, PendingCommand>;
   /** Default timeout for command execution in milliseconds */
   private defaultTimeout: number;
+  /** File system path for the persistent whitelist */
+  private whitelistFilePath: string;
 
   /**
    * Create a new CommandService
@@ -88,9 +95,10 @@ export class CommandService extends EventEmitter {
     this.whitelist = new Map();
     this.pendingCommands = new Map();
     this.defaultTimeout = defaultTimeout;
+    this.whitelistFilePath = path.join(os.homedir(), '.config', 'super-shell-mcp', 'whitelist.json');
 
-    // Initialize with platform-specific commands
-    this.initializeDefaultWhitelist();
+    // Initialize whitelist (load from file or create default) - don't await in constructor
+    this.initializeWhitelist().catch(console.error);
   }
 
   /**
@@ -99,6 +107,61 @@ export class CommandService extends EventEmitter {
    */
   public getShell(): string {
     return this.shell;
+  }
+
+  /**
+   * Initialize the whitelist by loading from file or creating default
+   */
+  private async initializeWhitelist(): Promise<void> {
+    try {
+      await this.loadWhitelistFromFile();
+    } catch (error) {
+      // If file doesn't exist or can't be loaded, initialize with defaults
+      this.initializeDefaultWhitelist();
+      // Save the default whitelist to file
+      await this.saveWhitelistToFile();
+    }
+  }
+
+  /**
+   * Load whitelist from persistent file
+   */
+  private async loadWhitelistFromFile(): Promise<void> {
+    try {
+      const data = await fsReadFile(this.whitelistFilePath, 'utf8');
+      const whitelistArray: CommandWhitelistEntry[] = JSON.parse(data);
+      
+      // Clear existing whitelist and load from file
+      this.whitelist.clear();
+      whitelistArray.forEach(entry => {
+        this.whitelist.set(entry.command, entry);
+      });
+    } catch (error: any) {
+      if (error?.code !== 'ENOENT') {
+        throw error;
+      }
+      throw new Error('Whitelist file not found');
+    }
+  }
+
+  /**
+   * Save whitelist to persistent file
+   */
+  private async saveWhitelistToFile(): Promise<void> {
+    try {
+      // Ensure config directory exists
+      const configDir = path.dirname(this.whitelistFilePath);
+      await fsMkdir(configDir, { recursive: true });
+
+      // Convert Map to Array for JSON serialization
+      const whitelistArray = Array.from(this.whitelist.values());
+      const data = JSON.stringify(whitelistArray, null, 2);
+      
+      await fsWriteFile(this.whitelistFilePath, data, 'utf8');
+    } catch (error) {
+      console.error('Failed to save whitelist to file:', error);
+      throw error;
+    }
   }
 
   /**
@@ -115,31 +178,34 @@ export class CommandService extends EventEmitter {
   }
 
   /**
-   * Add a command to the whitelist
+   * Add a command to the whitelist and save to file
    * @param entry The command whitelist entry
    */
-  public addToWhitelist(entry: CommandWhitelistEntry): void {
+  public async addToWhitelist(entry: CommandWhitelistEntry): Promise<void> {
     this.whitelist.set(entry.command, entry);
+    await this.saveWhitelistToFile();
   }
 
   /**
-   * Remove a command from the whitelist
+   * Remove a command from the whitelist and save to file
    * @param command The command to remove
    */
-  public removeFromWhitelist(command: string): void {
+  public async removeFromWhitelist(command: string): Promise<void> {
     this.whitelist.delete(command);
+    await this.saveWhitelistToFile();
   }
 
   /**
-   * Update a command's security level
+   * Update a command's security level and save to file
    * @param command The command to update
    * @param securityLevel The new security level
    */
-  public updateSecurityLevel(command: string, securityLevel: CommandSecurityLevel): void {
+  public async updateSecurityLevel(command: string, securityLevel: CommandSecurityLevel): Promise<void> {
     const entry = this.whitelist.get(command);
     if (entry) {
       entry.securityLevel = securityLevel;
       this.whitelist.set(command, entry);
+      await this.saveWhitelistToFile();
     }
   }
 
@@ -412,5 +478,33 @@ export class CommandService extends EventEmitter {
     
     // Reject the original promise
     pendingCommand.reject(new Error(reason));
+  }
+
+  /**
+   * Load the persistent whitelist from file
+   */
+  public async loadWhitelist(): Promise<void> {
+    try {
+      const data = await fsReadFile(this.whitelistFilePath, 'utf-8');
+      const entries: CommandWhitelistEntry[] = JSON.parse(data);
+      entries.forEach(entry => this.addToWhitelist(entry));
+    } catch (error: any) {
+      if (error?.code !== 'ENOENT') {
+        console.error('Failed to load whitelist:', error);
+      }
+    }
+  }
+
+  /**
+   * Save the current whitelist to file
+   */
+  public async saveWhitelist(): Promise<void> {
+    try {
+      const entries = this.getWhitelist();
+      const data = JSON.stringify(entries, null, 2);
+      await fsWriteFile(this.whitelistFilePath, data, 'utf-8');
+    } catch (error) {
+      console.error('Failed to save whitelist:', error);
+    }
   }
 }

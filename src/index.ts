@@ -436,7 +436,7 @@ class SuperShellMcpServer {
         ? CommandSecurityLevel.REQUIRES_APPROVAL
         : CommandSecurityLevel.FORBIDDEN;
 
-    this.commandService.addToWhitelist({
+    await this.commandService.addToWhitelist({
       command,
       securityLevel: securityLevelEnum,
       description,
@@ -470,7 +470,7 @@ class SuperShellMcpServer {
         ? CommandSecurityLevel.REQUIRES_APPROVAL
         : CommandSecurityLevel.FORBIDDEN;
 
-    this.commandService.updateSecurityLevel(command, securityLevelEnum);
+    await this.commandService.updateSecurityLevel(command, securityLevelEnum);
 
     return {
       content: [
@@ -492,7 +492,7 @@ class SuperShellMcpServer {
 
     const { command } = schema.parse(args);
 
-    this.commandService.removeFromWhitelist(command);
+    await this.commandService.removeFromWhitelist(command);
 
     return {
       content: [
